@@ -1,258 +1,178 @@
-/*
-Olympic backend (Express)
-- Sessions and purchases stored in SQLite (backend/db.sqlite)
-- Create NowPayments invoice -> user pays -> webhook marks paid -> create session
-- Session: token, created_at, expires_at, questions_left (40 default)
-- /api/ask endpoint checks session validity, decrements questions, and calls OpenAI
-- .env must contain OPENAI_API_KEY and NOWPAYMENTS_API_KEY and optionally NOWPAYMENTS_IPN_SECRET
-*/
+import express from 'express';
+import cors from 'cors';
+import fetch from 'node-fetch';
+import bodyParser from 'body-parser';
+import sqlite3 from 'sqlite3';
+import { open } from 'sqlite';
+import path from 'path';
+import { fileURLToPath } from 'url';
 
-require('dotenv').config();
-const express = require('express');
-const fetch = require('node-fetch');
-const sqlite = require('sqlite');
-const sqlite3 = require('sqlite3');
-const path = require('path');
-const cors = require('cors');
-const { v4: uuidv4 } = require('uuid');
-const bodyParser = require('body-parser');
+// ========== CONFIG ==========
+const PORT = process.env.PORT || 10000;
+const ACCESS_PASSWORD = process.env.ACCESS_PASSWORD || 'Olympic2025!';
+const SESSION_DURATION_HOURS = 2;
+const SESSION_PRICE = 2.0;
+const QUESTIONS_PER_SESSION = 5; // after payment
+const DB_FILE = './olympic.db';
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
 
 const app = express();
 app.use(cors());
-app.use(express.json());
-app.use(bodyParser.urlencoded({ extended: false }));
-app.use(express.static(path.join(__dirname, '..', 'frontend')));
+app.use(bodyParser.json());
+app.use(express.static(path.join(__dirname, 'public')));
 
-const PORT = process.env.PORT || 3000;
-const OPENAI_KEY = process.env.OPENAI_API_KEY || null;
-const NOWPAYMENTS_KEY = process.env.NOWPAYMENTS_API_KEY || null;
-const NOWPAYMENTS_IPN_SECRET = process.env.NOWPAYMENTS_IPN_SECRET || null;
-const SESSION_PRICE_USD = parseFloat(process.env.SESSION_PRICE_USD || '2.0');
-
-if (!OPENAI_KEY) console.warn("WARNING: OPENAI_API_KEY not set in env");
-if (!NOWPAYMENTS_KEY) console.warn("WARNING: NOWPAYMENTS_API_KEY not set in env");
-
+// ========== DATABASE ==========
 let db;
-(async ()=>{
-  db = await sqlite.open({ filename: process.env.DATABASE_URL || './db.sqlite', driver: sqlite3.Database });
-  await db.exec(`
-    CREATE TABLE IF NOT EXISTS purchases (
-      id TEXT PRIMARY KEY,
-      invoice_id TEXT,
-      status TEXT,
-      amount_usd REAL,
-      crypto_currency TEXT,
-      created_at DATETIME DEFAULT CURRENT_TIMESTAMP
-    );
-  `);
+(async () => {
+  db = await open({
+    filename: DB_FILE,
+    driver: sqlite3.Database
+  });
+
   await db.exec(`
     CREATE TABLE IF NOT EXISTS sessions (
       token TEXT PRIMARY KEY,
-      purchase_id TEXT,
-      created_at DATETIME,
-      expires_at DATETIME,
-      questions_left INTEGER
-    );
+      expires_at INTEGER,
+      questions_left INTEGER,
+      questions_asked INTEGER DEFAULT 0,
+      paid INTEGER DEFAULT 0
+    )
   `);
 })();
 
-// Serve frontend
-app.get('/', (req,res)=> res.sendFile(path.join(__dirname, '..','frontend','index.html')));
-
-// Public config
-app.get('/api/config', (req,res)=>{
-  res.json({ message: 'Olympic API', models_accuracy: '79-100%', session_price_usd: SESSION_PRICE_USD });
-});
-
-// Create NowPayments invoice
-app.post('/api/create-invoice', async (req,res)=>{
-  // amount in USD
-  const amount = SESSION_PRICE_USD;
-  const order_id = uuidv4();
-  try {
-    const payload = {
-      price_amount: amount,
-      price_currency: 'usd',
-      pay_currency: 'btc,eth,ltc', // allow multiple, NowPayments may choose
-      order_id: order_id,
-      order_description: 'Olympic session (40 questions / 2 hours)'
-    };
-    const resp = await fetch('https://api.nowpayments.io/v1/invoice', {
-      method: 'POST',
-      headers: {
-        'x-api-key': NOWPAYMENTS_KEY,
-        'Content-Type': 'application/json'
-      },
-      body: JSON.stringify(payload)
-    });
-    const data = await resp.json();
-    // store purchase
-    await db.run("INSERT INTO purchases (id, invoice_id, status, amount_usd, crypto_currency) VALUES (?,?,?,?,?)",
-      [order_id, data.id, data.status || 'pending', amount, (data.pay_currency || null)]
-    );
-    return res.json({ checkout_url: data.invoice_url || data.payment_url || data.url, order_id, invoice: data });
-  } catch (err) {
-    console.error('nowpayments error', err);
-    return res.status(500).json({ error: 'invoice creation failed' });
+// ========== PASSWORD PROTECTION ==========
+app.post('/api/login', (req, res) => {
+  const { password } = req.body;
+  if (password === ACCESS_PASSWORD) {
+    return res.json({ ok: true });
   }
+  res.status(401).json({ error: 'Invalid password' });
 });
 
-// NowPayments webhook endpoint (configure this URL in NowPayments dashboard)
-// This endpoint should verify signature or secret if you set one in NowPayments
-app.post('/api/webhook/nowpayments', async (req,res)=>{
-  // NowPayments will POST JSON with invoice info.
-  const payload = req.body;
-  // simple handling - in production verify signature/ipn_secret
-  try {
-    // expected fields: id, order_id, payment_status
-    const invoiceId = payload.id || payload.invoice_id || null;
-    const status = payload.payment_status || payload.status || payload.payment;
-    // find matching purchase
-    if (payload.order_id) {
-      const purchase = await db.get("SELECT * FROM purchases WHERE id = ?", [payload.order_id]);
-      if (purchase) {
-        // update purchase status
-        await db.run("UPDATE purchases SET status = ? WHERE id = ?", [status, payload.order_id]);
-        if (status === 'finished' || status === 'confirmed' || status === 'paid') {
-          // create session: 2 hours from now and 40 questions
-          const token = uuidv4();
-          const now = new Date();
-          const expires = new Date(now.getTime() + 1000*60*60*2); // +2 hours
-          await db.run("INSERT INTO sessions (token, purchase_id, created_at, expires_at, questions_left) VALUES (?,?,?,?,?)",
-            [token, purchase.id, now.toISOString(), expires.toISOString(), 40]);
-          // Optionally notify user via frontend (not implemented)
-        }
-      }
+app.use((req, res, next) => {
+  if (req.path.startsWith('/api') && req.path !== '/api/login') {
+    const pw = req.headers['x-access-password'];
+    if (!pw || pw !== ACCESS_PASSWORD) {
+      return res.status(401).json({ error: 'Invalid access password' });
     }
-    res.json({ ok: true });
-  } catch (err) {
-    console.error('webhook error', err);
-    res.status(500).json({ error: 'webhook handling failed' });
   }
+  next();
 });
 
-// Admin helper to mark invoice paid (for testing, not exposed in production)
-app.post('/api/admin/mark-paid', async (req,res)=>{
-  const { order_id } = req.body;
-  if (!order_id) return res.status(400).json({ error: 'order_id required' });
-  const purchase = await db.get("SELECT * FROM purchases WHERE id = ?", [order_id]);
-  if (!purchase) return res.status(404).json({ error: 'purchase not found' });
-  await db.run("UPDATE purchases SET status = 'finished' WHERE id = ?", [order_id]);
-  // create session
-  const token = uuidv4();
-  const now = new Date();
-  const expires = new Date(now.getTime() + 1000*60*60*2);
-  await db.run("INSERT INTO sessions (token, purchase_id, created_at, expires_at, questions_left) VALUES (?,?,?,?,?)",
-    [token, purchase.id, now.toISOString(), expires.toISOString(), 40]);
-  return res.json({ ok: true, token });
-});
+// ========== HELPER FUNCTIONS ==========
+function makeToken() {
+  return Math.random().toString(36).substring(2) + Date.now().toString(36);
+}
 
-// Create session by purchase id (polling style) - returns session token if purchase finished
-app.post('/api/create-session', async (req,res)=>{
-  const { order_id } = req.body;
-  if (!order_id) return res.status(400).json({ error: 'order_id required' });
-  const purchase = await db.get("SELECT * FROM purchases WHERE id = ?", [order_id]);
-  if (!purchase) return res.status(404).json({ error: 'purchase not found' });
-  if (purchase.status === 'finished' || purchase.status === 'confirmed' || purchase.status === 'paid') {
-    // see if session already created
-    const s = await db.get("SELECT * FROM sessions WHERE purchase_id = ?", [purchase.id]);
-    if (s) return res.json({ token: s.token, expires_at: s.expires_at, questions_left: s.questions_left });
-    // create session
-    const token = uuidv4();
-    const now = new Date();
-    const expires = new Date(now.getTime() + 1000*60*60*2);
-    await db.run("INSERT INTO sessions (token, purchase_id, created_at, expires_at, questions_left) VALUES (?,?,?,?,?)",
-      [token, purchase.id, now.toISOString(), expires.toISOString(), 40]);
-    return res.json({ token, expires_at: expires.toISOString(), questions_left: 40 });
-  } else {
-    return res.json({ status: purchase.status });
-  }
-});
+function nowUnix() {
+  return Math.floor(Date.now() / 1000);
+}
 
-// Get session status
-app.get('/api/session/:token', async (req,res)=>{
-  const token = req.params.token;
-  const s = await db.get("SELECT * FROM sessions WHERE token = ?", [token]);
-  if (!s) return res.status(404).json({ error: 'session not found' });
-  const now = new Date();
-  const expires = new Date(s.expires_at);
-  const msLeft = Math.max(0, expires - now);
-  return res.json({ token: s.token, expires_at: s.expires_at, questions_left: s.questions_left, ms_left: msLeft });
-});
-// ===================== PUBLIC ASK ENDPOINT =====================
-app.post('/api/ask_public', async (req, res) => {
-  const { question, subject } = req.body;
-  if (!question) return res.status(400).json({ error: 'Question required' });
+function inFuture(hours) {
+  return nowUnix() + hours * 3600;
+}
 
+// ========== PAYMENT ENDPOINTS (stub with NOWPayments) ==========
+// Here you should integrate your real NOWPayments API
+app.post('/api/create-invoice', async (req, res) => {
   try {
-    if (!OPENAI_KEY) return res.status(500).json({ error: 'Missing OpenAI key' });
-
-    const prompt = `You are an expert tutor for ${subject || 'general topics'}. Answer clearly and concisely. Question: ${question}`;
-
-    const resp = await fetch('https://api.openai.com/v1/chat/completions', {
-      method: 'POST',
-      headers: { 
-        'Content-Type': 'application/json', 
-        'Authorization': `Bearer ${OPENAI_KEY}`
-      },
-      body: JSON.stringify({
-        model: "gpt-4o-mini",
-        messages: [
-          { role: "system", content: "You are a helpful tutor. Answer clearly." },
-          { role: "user", content: prompt }
-        ],
-        max_tokens: 500,
-        temperature: 0.3
-      })
-    });
-
-    const data = await resp.json();
-    const answer = data?.choices?.[0]?.message?.content || data?.error?.message || 'No answer';
-    res.json({ answer });
+    // Simulate invoice creation
+    const orderId = makeToken();
+    const checkoutUrl = `https://nowpayments.io/payment/${orderId}`;
+    // Save unpaid session
+    await db.run(
+      `INSERT INTO sessions (token, expires_at, questions_left, paid) VALUES (?, ?, ?, ?)`,
+      orderId, inFuture(SESSION_DURATION_HOURS), QUESTIONS_PER_SESSION, 0
+    );
+    res.json({ order_id: orderId, checkout_url: checkoutUrl });
   } catch (err) {
-    console.error('Error in ask_public', err);
-    res.status(500).json({ error: 'Server error' });
+    console.error(err);
+    res.status(500).json({ error: 'Invoice creation failed' });
   }
 });
 
-// Ask question (main endpoint)
-app.post('/api/ask', async (req,res)=>{
+// Polling endpoint to check if payment confirmed
+app.post('/api/create-session', async (req, res) => {
+  const { order_id } = req.body;
+  if (!order_id) return res.status(400).json({ error: 'Missing order_id' });
+
+  // In real life: check NOWPayments status here
+  // For now, simulate that after 1 poll, payment is done
+  const session = await db.get(`SELECT * FROM sessions WHERE token = ?`, order_id);
+  if (!session) return res.status(404).json({ error: 'Session not found' });
+
+  // Simulate confirmation
+  await db.run(`UPDATE sessions SET paid = 1 WHERE token = ?`, order_id);
+
+  res.json({
+    token: session.token,
+    expires_at: new Date(session.expires_at * 1000).toISOString(),
+    questions_left: QUESTIONS_PER_SESSION
+  });
+});
+
+// ========== ASK ENDPOINT ==========
+app.post('/api/ask', async (req, res) => {
   const { token, question, subject } = req.body;
-  if (!token || !question) return res.status(400).json({ error: 'token and question required' });
-  const s = await db.get("SELECT * FROM sessions WHERE token = ?", [token]);
-  if (!s) return res.status(403).json({ error: 'invalid session' });
-  const now = new Date();
-  if (new Date(s.expires_at) < now) return res.status(403).json({ error: 'session expired' });
-  if (s.questions_left <= 0) return res.status(403).json({ error: 'no questions left' });
-  // decrement counter
-  await db.run("UPDATE sessions SET questions_left = questions_left - 1 WHERE token = ?", [token]);
+  if (!token || !question) return res.status(400).json({ error: 'Missing token or question' });
 
-  // Call OpenAI
-  try {
-    if (!OPENAI_KEY) return res.status(500).json({ error: 'OpenAI key not configured' });
-    const prompt = `You are an expert tutor for ${subject || 'general science and math'}. Answer the question concisely and clearly. Question: ${question}`;
-    const resp = await fetch('https://api.openai.com/v1/chat/completions', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + OPENAI_KEY },
-      body: JSON.stringify({
-        model: "gpt-4o-mini", // choose available model
-        messages: [
-          { role: "system", content: "You are an expert tutor. Provide clear, step-by-step answers when appropriate."},
-          { role: "user", content: prompt }
-        ],
-        max_tokens: 500,
-        temperature: 0.2
-      })
-    });
-    const data = await resp.json();
-    const answer = data?.choices?.[0]?.message?.content || (data?.error?.message || 'No answer');
-    return res.json({ answer });
-  } catch (err) {
-    console.error('OpenAI error', err);
-    return res.status(500).json({ error: 'generation failed' });
+  const session = await db.get(`SELECT * FROM sessions WHERE token = ?`, token);
+  if (!session) return res.status(401).json({ error: 'Invalid session' });
+
+  // Check expiration
+  if (session.expires_at < nowUnix()) {
+    await db.run(`DELETE FROM sessions WHERE token = ?`, token);
+    return res.status(401).json({ error: 'session expired' });
   }
+
+  // ✅ First question is free if unpaid
+  if (session.paid === 0 && session.questions_asked === 0) {
+    const answer = `🤖 First free answer for: "${question}" (subject: ${subject})`;
+    await db.run(
+      `UPDATE sessions SET questions_asked = questions_asked + 1 WHERE token = ?`,
+      token
+    );
+    return res.json({ answer });
+  }
+
+  // Otherwise, must have remaining questions
+  if (session.questions_left <= 0) {
+    return res.status(402).json({ error: 'no questions left' });
+  }
+
+  // Here you should call OpenAI or your AI logic
+  const answer = `🤖 Paid session answer to: "${question}" (subject: ${subject})`;
+
+  await db.run(
+    `UPDATE sessions SET questions_left = questions_left - 1, questions_asked = questions_asked + 1 WHERE token = ?`,
+    token
+  );
+
+  res.json({ answer });
 });
 
-app.listen(PORT, ()=>{
+// ========== SESSION STATUS ==========
+app.get('/api/session/:token', async (req, res) => {
+  const { token } = req.params;
+  const session = await db.get(`SELECT * FROM sessions WHERE token = ?`, token);
+  if (!session) return res.status(404).json({ error: 'Session not found' });
+
+  res.json({
+    token: session.token,
+    expires_at: new Date(session.expires_at * 1000).toISOString(),
+    questions_left: session.questions_left
+  });
+});
+
+// ========== SERVE FRONTEND ==========
+app.get('*', (req, res) => {
+  res.sendFile(path.join(__dirname, 'public', 'index.html'));
+});
+
+// ========== START SERVER ==========
+app.listen(PORT, () => {
   console.log(`Olympic backend listening on port ${PORT}`);
 });
+
