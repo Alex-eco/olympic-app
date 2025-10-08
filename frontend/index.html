@@ -1,45 +1,100 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>Olympic Tutor</title>
+  <style>
+    body {
+      font-family: Arial, sans-serif;
+      background: #f3f6fa;
+      display: flex;
+      justify-content: center;
+      align-items: flex-start;
+      padding-top: 40px;
+    }
+    .container {
+      max-width: 600px;
+      background: white;
+      padding: 20px;
+      border-radius: 10px;
+      box-shadow: 0 0 15px rgba(0,0,0,0.1);
+    }
+    textarea {
+      width: 100%;
+      min-height: 80px;
+      padding: 10px;
+      margin-top: 10px;
+      font-size: 16px;
+      border-radius: 6px;
+      border: 1px solid #ccc;
+    }
+    button {
+      margin-top: 10px;
+      padding: 10px 20px;
+      background: #007bff;
+      color: white;
+      border: none;
+      border-radius: 6px;
+      cursor: pointer;
+      font-size: 16px;
+    }
+    button:hover {
+      background: #0056b3;
+    }
+    #answer {
+      margin-top: 20px;
+      padding: 10px;
+      background: #f9f9f9;
+      border-radius: 6px;
+      min-height: 50px;
+      border: 1px solid #ddd;
+    }
+    #purchase {
+      margin-top: 20px;
+      padding: 10px;
+      background: #f1f1f1;
+      border-radius: 6px;
+    }
+    #sessionArea {
+      margin-top: 15px;
+      background: #eef7ff;
+      padding: 10px;
+      border-radius: 6px;
+    }
+  </style>
+</head>
 <body>
   <div class="container">
     <h1>Olympic Tutor</h1>
 
-    <!-- PASSWORD SCREEN -->
-    <div id="passwordGate">
-      <p>Enter access password to continue:</p>
-      <input type="password" id="accessPassword" placeholder="Password" />
-      <button id="accessBtn">Enter</button>
-      <div id="accessError" style="color:red;"></div>
+    <h3>Subjects</h3>
+    <select id="subject">
+      <option value="math">Math</option>
+      <option value="physics">Physics</option>
+      <option value="chemistry">Chemistry</option>
+      <option value="biology">Biology</option>
+    </select>
+
+    <textarea id="question" placeholder="Type your question..."></textarea>
+    <button id="askBtn">Ask</button>
+
+    <div id="answer"></div>
+
+    <div id="purchase">
+      <p>You have <strong>1 free question</strong>. After that, please buy a session.</p>
+      <p>Price: <span id="price"></span> USD</p>
+      <button id="buyBtn">Buy Session</button>
+      <div id="checkout"></div>
     </div>
 
-    <!-- QUESTION AREA -->
-    <div id="mainApp" style="display:none;">
-      <h3>Subjects</h3>
-      <select id="subject">
-        <option value="math">Math</option>
-        <option value="physics">Physics</option>
-        <option value="chemistry">Chemistry</option>
-        <option value="biology">Biology</option>
-      </select>
-      <br/><br/>
-
-      <textarea id="question" placeholder="Type your question..."></textarea>
-      <br/>
-      <button id="askBtn">Ask</button>
-      <div id="answer"></div>
-
-      <hr>
-      <div id="purchase">
-        <p>You have 1 free question. After that, buy access for <span id="price"></span> USD.</p>
-        <button id="buyBtn">Buy Session</button>
-        <div id="checkout"></div>
-      </div>
-
-      <div id="sessionArea" style="display:none;">
-        <p>Questions left: <span id="questionsLeft"></span></p>
-        <p>Time left: <span id="timeLeft"></span></p>
-      </div>
+    <div id="sessionArea" style="display:none;">
+      <p>Questions left: <span id="questionsLeft"></span></p>
+      <p>Time left: <span id="timeLeft"></span></p>
     </div>
-
   </div>
+
   <script src="app.js"></script>
 </body>
+</html>
 
