@@ -1,24 +1,41 @@
 /*
 Olympic frontend (static JS)
-- Creates NowPayments invoice via backend, opens checkout URL
-- Polls for purchase completion and creates session
-- Keeps session token in sessionStorage during 2-hour window
-- Shows remaining time and questions; allows asking questions via /api/ask
+- Password gate: Olympic2025!
+- Allows 1 free answer (tracked in sessionStorage)
+- Then requires payment session (NowPayments)
 */
 
-const API_BASE = 'https://olympic-app-qpvd.onrender.com'; // leave empty to use same origin when deployed together, or set to your backend URL when testing
+const API_BASE = 'https://olympic-app-qpvd.onrender.com';
+const ACCESS_PASSWORD = 'Olympic2025!';
+
 let SESSION_PRICE = 2.0;
 let sessionToken = sessionStorage.getItem('olympic_session_token') || null;
 let sessionExpires = sessionStorage.getItem('olympic_session_expires') || null;
 let questionsLeft = parseInt(sessionStorage.getItem('olympic_questions_left') || '0', 10);
+let firstFreeUsed = sessionStorage.getItem('olympic_first_free_used') === '1';
+let unlocked = sessionStorage.getItem('olympic_unlocked') === '1';
 
 document.getElementById('price').textContent = SESSION_PRICE.toFixed(2);
 
+// =================== PASSWORD GATE ===================
+function askPasswordIfNeeded() {
+  if (unlocked) return;
+  const p = prompt('Enter site access password:');
+  if (p === ACCESS_PASSWORD) {
+    sessionStorage.setItem('olympic_unlocked', '1');
+    unlocked = true;
+  } else {
+    alert('Incorrect password. Access limited.');
+  }
+}
+askPasswordIfNeeded();
+
+// =================== SESSION UI ===================
 async function refreshSessionUI() {
   if (!sessionToken) return;
   try {
     const resp = await fetch(`${API_BASE}/api/session/${sessionToken}`);
-    if (!resp.ok) { console.warn('session fetch failed'); return; }
+    if (!resp.ok) return;
     const j = await resp.json();
     sessionExpires = j.expires_at;
     questionsLeft = j.questions_left;
@@ -28,7 +45,6 @@ async function refreshSessionUI() {
     document.getElementById('questionsLeft').textContent = questionsLeft;
     document.getElementById('sessionArea').style.display = 'block';
     document.getElementById('purchase').style.display = 'none';
-    // update countdown
     startCountdown(new Date(sessionExpires));
   } catch (err) {
     console.error(err);
@@ -48,34 +64,34 @@ function startCountdown(expireDate) {
       location.reload();
       return;
     }
-    const hrs = Math.floor(msLeft/3600000);
-    const mins = Math.floor((msLeft%3600000)/60000);
-    const secs = Math.floor((msLeft%60000)/1000);
+    const hrs = Math.floor(msLeft / 3600000);
+    const mins = Math.floor((msLeft % 3600000) / 60000);
+    const secs = Math.floor((msLeft % 60000) / 1000);
     el.textContent = `${String(hrs).padStart(2,'0')}:${String(mins).padStart(2,'0')}:${String(secs).padStart(2,'0')}`;
   }
   tick();
   setInterval(tick, 1000);
 }
 
+// =================== PAYMENT ===================
 document.getElementById('buyBtn').onclick = async () => {
-  // create invoice
   const resp = await fetch(`${API_BASE}/api/create-invoice`, { method: 'POST' });
   const j = await resp.json();
   if (!resp.ok) {
     alert(j.error || 'Invoice creation failed');
     return;
   }
-  // open checkout
   document.getElementById('checkout').innerHTML = 'Opening checkout...';
   window.open(j.checkout_url, '_blank');
-  // poll /create-session to detect payment completed
-  const orderId = j.order_id;
   document.getElementById('checkout').innerHTML = 'Waiting for payment confirmation...';
-  const maxPoll = 60; // poll for up to ~5 minutes
-  for (let i=0;i<maxPoll;i++) {
-    await new Promise(r=>setTimeout(r,5000));
+  const orderId = j.order_id;
+  const maxPoll = 60;
+  for (let i = 0; i < maxPoll; i++) {
+    await new Promise(r => setTimeout(r, 5000));
     const sresp = await fetch(`${API_BASE}/api/create-session`, {
-      method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ order_id: orderId})
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ order_id: orderId })
     });
     const sj = await sresp.json();
     if (sj.token) {
@@ -92,31 +108,59 @@ document.getElementById('buyBtn').onclick = async () => {
   alert('Payment not detected yet. If you completed payment, wait a bit or contact support.');
 };
 
+// =================== ASK ===================
 document.getElementById('askBtn').onclick = async () => {
   const q = document.getElementById('question').value.trim();
   const subj = document.getElementById('subject').value;
   if (!q) return alert('Write a question first.');
-  if (!sessionToken) return alert('No active session. Please buy a session first.');
+
+  // 👇 One free answer logic
+  if (!firstFreeUsed) {
+    try {
+      const resp = await fetch(`${API_BASE}/api/ask_public`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ question: q, subject: subj })
+      });
+      const j = await resp.json();
+      if (!resp.ok) return alert(j.error || 'Error');
+      document.getElementById('answer').textContent = j.answer;
+      firstFreeUsed = true;
+      sessionStorage.setItem('olympic_first_free_used', '1');
+      return;
+    } catch (err) {
+      console.error(err);
+      alert('Free question failed.');
+      return;
+    }
+  }
+
+  // After free question: must have active session
+  if (!sessionToken) {
+    alert('Your free question was used. Please buy a session.');
+    return;
+  }
+
   const resp = await fetch(`${API_BASE}/api/ask`, {
-    method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ token: sessionToken, question: q, subject: subj})
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ token: sessionToken, question: q, subject: subj })
   });
   const j = await resp.json();
   if (!resp.ok) {
     alert(j.error || 'Error asking question');
     if (j.error === 'no questions left' || j.error === 'session expired') {
-      sessionStorage.removeItem('olympic_session_token');
-      sessionStorage.removeItem('olympic_session_expires');
-      sessionStorage.removeItem('olympic_questions_left');
+      sessionStorage.clear();
       location.reload();
     }
     return;
   }
   document.getElementById('answer').textContent = j.answer;
-  // update local count
   questionsLeft = parseInt(sessionStorage.getItem('olympic_questions_left') || questionsLeft) - 1;
   sessionStorage.setItem('olympic_questions_left', questionsLeft);
   document.getElementById('questionsLeft').textContent = questionsLeft;
-});
+};
 
-// on page load, refresh UI if session exists
+// =================== INIT ===================
 if (sessionToken) refreshSessionUI();
+
