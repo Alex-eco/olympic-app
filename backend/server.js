@@ -1,3 +1,5 @@
+
+Server.js
 import express from 'express';
 import cors from 'cors';
 import bodyParser from 'body-parser';
@@ -80,65 +82,35 @@ app.post('/api/create-session', async (req, res) => {
   });
 });
 
-import OpenAI from "openai";
-const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
-
-// ========== ASK ENDPOINT ==========
 app.post('/api/ask', async (req, res) => {
   const { token, question, subject } = req.body;
-  if (!token || !question) return res.status(400).json({ error: 'Missing token or question' });
+  if (!question) return res.status(400).json({ error: 'Missing question' });
 
-  const session = await db.get(`SELECT * FROM sessions WHERE token = ?`, token);
-  if (!session) return res.status(401).json({ error: 'Invalid session' });
+  // Create temporary session for free question
+  let session = null;
+  if (token) session = await db.get(`SELECT * FROM sessions WHERE token = ?`, token);
 
-  // Check expiration
+  // Free question
+  if (!session) {
+    const freeAnswer = `🤖 First free answer: "${question}" (subject: ${subject})`;
+    return res.json({ answer: freeAnswer });
+  }
+
   if (session.expires_at < nowUnix()) {
     await db.run(`DELETE FROM sessions WHERE token = ?`, token);
     return res.status(401).json({ error: 'session expired' });
   }
 
-  // ✅ First free answer if unpaid
-  if (session.paid === 0 && session.questions_asked === 0) {
-    const aiResponse = await openai.chat.completions.create({
-      model: "gpt-4o-mini",
-      messages: [
-        { role: "system", content: "You are a helpful assistant." },
-        { role: "user", content: `${question} (subject: ${subject})` }
-      ],
-    });
-
-    const answer = aiResponse.choices[0].message.content;
-
-    await db.run(
-      `UPDATE sessions SET questions_asked = questions_asked + 1 WHERE token = ?`,
-      token
-    );
-
-    return res.json({ answer });
-  }
-
-  // Must have questions left if not free
   if (session.questions_left <= 0) {
     return res.status(402).json({ error: 'no questions left' });
   }
 
-  // 🔥 Real AI response
-  const aiResponse = await openai.chat.completions.create({
-    model: "gpt-4o-mini",
-    messages: [
-      { role: "system", content: "You are a helpful assistant." },
-      { role: "user", content: `${question} (subject: ${subject})` }
-    ],
-  });
-
-  const answer = aiResponse.choices[0].message.content;
-
+  const answer = `🤖 Paid answer: "${question}" (subject: ${subject})`;
   await db.run(
     `UPDATE sessions SET questions_left = questions_left - 1, questions_asked = questions_asked + 1 WHERE token = ?`,
     token
   );
-
-  res.json({ answer });
+  res.json({ answer, questions_left: session.questions_left - 1 });
 });
 
 app.get('/api/session/:token', async (req, res) => {
@@ -160,6 +132,7 @@ app.get('*', (req, res) => {
 app.listen(PORT, () => {
   console.log(`✅ Olympic backend listening on port ${PORT}`);
 });
+
 
 
 
