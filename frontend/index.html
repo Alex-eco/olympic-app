@@ -1,0 +1,48 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Olympic — AI Tutor</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <header class="header">
+    <h1>Olympic — AI Tutor</h1>
+    <p class="tag">Fast, crypto-payable help for math, physics, chemistry, biology and more</p>
+  </header>
+
+  <main class="card">
+    <section id="purchase" class="section">
+      <h2>Buy a session — 40 questions / 2 hours</h2>
+      <p>Price: <strong>$<span id="price">2.00</span></strong> (pay in crypto)</p>
+      <button id="buyBtn" class="btn primary">Buy session with crypto</button>
+      <div id="checkout" class="muted"></div>
+      <p class="muted small">Models have accuracy between 79% and 100%.</p>
+    </section>
+
+    <section id="sessionArea" class="section" style="display:none">
+      <h2>Your Session</h2>
+      <p>Time left: <span id="timeLeft">--:--:--</span></p>
+      <p>Questions left: <span id="questionsLeft">0</span></p>
+
+      <textarea id="question" placeholder="Type your question..." rows="4"></textarea>
+      <select id="subject">
+        <option value="mathematics">Mathematics</option>
+        <option value="physics">Physics</option>
+        <option value="chemistry">Chemistry</option>
+        <option value="biology">Biology</option>
+        <option value="other">Other</option>
+      </select>
+      <button id="askBtn" class="btn">Ask (uses 1 question)</button>
+      <div id="answer" class="answer"></div>
+    </section>
+  </main>
+
+  <footer class="footer">
+    <p>© Olympic — AI Tutor</p>
+  </footer>
+
+<script src="app.js"></script>
+</body>
+</html>
