@@ -179,6 +179,41 @@ app.get('/api/session/:token', async (req,res)=>{
   const msLeft = Math.max(0, expires - now);
   return res.json({ token: s.token, expires_at: s.expires_at, questions_left: s.questions_left, ms_left: msLeft });
 });
+// ===================== PUBLIC ASK ENDPOINT =====================
+app.post('/api/ask_public', async (req, res) => {
+  const { question, subject } = req.body;
+  if (!question) return res.status(400).json({ error: 'Question required' });
+
+  try {
+    if (!OPENAI_KEY) return res.status(500).json({ error: 'Missing OpenAI key' });
+
+    const prompt = `You are an expert tutor for ${subject || 'general topics'}. Answer clearly and concisely. Question: ${question}`;
+
+    const resp = await fetch('https://api.openai.com/v1/chat/completions', {
+      method: 'POST',
+      headers: { 
+        'Content-Type': 'application/json', 
+        'Authorization': `Bearer ${OPENAI_KEY}`
+      },
+      body: JSON.stringify({
+        model: "gpt-4o-mini",
+        messages: [
+          { role: "system", content: "You are a helpful tutor. Answer clearly." },
+          { role: "user", content: prompt }
+        ],
+        max_tokens: 500,
+        temperature: 0.3
+      })
+    });
+
+    const data = await resp.json();
+    const answer = data?.choices?.[0]?.message?.content || data?.error?.message || 'No answer';
+    res.json({ answer });
+  } catch (err) {
+    console.error('Error in ask_public', err);
+    res.status(500).json({ error: 'Server error' });
+  }
+});
 
 // Ask question (main endpoint)
 app.post('/api/ask', async (req,res)=>{
