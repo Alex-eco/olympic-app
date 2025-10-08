@@ -1,0 +1,11 @@
+{
+  "version": 2,
+  "name": "olympic-frontend",
+  "public": true,
+  "builds": [
+    { "src": "frontend/**/*", "use": "@vercel/static" }
+  ],
+  "routes": [
+    { "src": "/(.*)", "dest": "/frontend/$1" }
+  ]
+}
