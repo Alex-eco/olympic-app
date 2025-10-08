@@ -6,7 +6,7 @@ Olympic frontend (static JS)
 - Shows remaining time and questions; allows asking questions via /api/ask
 */
 
-const API_BASE = ''; // leave empty to use same origin when deployed together, or set to your backend URL when testing
+const API_BASE = 'https://olympic-app-qpvd.onrender.com/'; // leave empty to use same origin when deployed together, or set to your backend URL when testing
 let SESSION_PRICE = 2.0;
 let sessionToken = sessionStorage.getItem('olympic_session_token') || null;
 let sessionExpires = sessionStorage.getItem('olympic_session_expires') || null;
