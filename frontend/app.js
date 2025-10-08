@@ -4,6 +4,26 @@ Olympic frontend (static JS)
 - Allows 1 free answer (tracked in sessionStorage)
 - Then requires payment session (NowPayments)
 */
+// ===== Password Gate =====
+const ACCESS_PASSWORD = "Olympic2025!";
+const storedAccess = sessionStorage.getItem('olympic_access_granted');
+let freeQuestionUsed = sessionStorage.getItem('olympic_free_used') === 'true';
+
+document.getElementById('accessBtn').onclick = () => {
+  const entered = document.getElementById('accessPassword').value.trim();
+  if (entered === ACCESS_PASSWORD) {
+    sessionStorage.setItem('olympic_access_granted', 'true');
+    document.getElementById('passwordGate').style.display = 'none';
+    document.getElementById('mainApp').style.display = 'block';
+  } else {
+    document.getElementById('accessError').textContent = 'Invalid access password';
+  }
+};
+
+if (storedAccess === 'true') {
+  document.getElementById('passwordGate').style.display = 'none';
+  document.getElementById('mainApp').style.display = 'block';
+}
 
 const API_BASE = 'https://olympic-app-qpvd.onrender.com';
 const ACCESS_PASSWORD = 'Olympic2025!';
@@ -136,10 +156,17 @@ document.getElementById('askBtn').onclick = async () => {
   }
 
   // After free question: must have active session
-  if (!sessionToken) {
-    alert('Your free question was used. Please buy a session.');
+if (!sessionToken) {
+  if (!freeQuestionUsed) {
+    // First free question
+    freeQuestionUsed = true;
+    sessionStorage.setItem('olympic_free_used', 'true');
+  } else {
+    alert('Your free question is used. Please buy a session to continue.');
     return;
   }
+}
+
 
   const resp = await fetch(`${API_BASE}/api/ask`, {
     method: 'POST',
