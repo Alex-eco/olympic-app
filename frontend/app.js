@@ -1,5 +1,5 @@
 // ===================== CONFIG =========================
-const API_URL = "https://olympic-app-qpvd.onrender.com";  // your backend
+const API_URL = "https://olympic-app-qpvd.onrender.com/api";
 let sessionToken = null;
 let freeQuestionUsed = sessionStorage.getItem('olympic_free_used') === 'true';
 
@@ -39,13 +39,13 @@ askBtn.onclick = async () => {
     return;
   }
 
-  answerDiv.textContent = 'Thinking...';
+  answerDiv.textContent = '🤔 Thinking...';
 
   try {
     const res = await fetch(`${API_URL}/ask`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ question, subject, sessionToken })
+      body: JSON.stringify({ token: sessionToken, question, subject })
     });
 
     const data = await res.json();
@@ -58,9 +58,9 @@ askBtn.onclick = async () => {
       sessionStorage.setItem('olympic_free_used', 'true');
     }
 
-    if (data.questionsLeft !== undefined) {
-      questionsLeftSpan.textContent = data.questionsLeft;
-      if (data.questionsLeft <= 0) {
+    if (data.questions_left !== undefined) {
+      questionsLeftSpan.textContent = data.questions_left;
+      if (data.questions_left <= 0) {
         sessionToken = null;
         sessionArea.style.display = 'none';
       }
@@ -73,10 +73,22 @@ askBtn.onclick = async () => {
 // ===================== BUY SESSION ====================
 buyBtn.onclick = async () => {
   try {
-    const res = await fetch(`${API_URL}/create-session`, { method: 'POST' });
+    const res = await fetch(`${API_URL}/create-invoice`, {
+      method: 'POST'
+    });
     const data = await res.json();
-    if (data.url) {
-      window.open(data.url, '_blank');
+    if (data.checkout_url) {
+      window.open(data.checkout_url, '_blank');
+      // Simulate payment and create session
+      const paid = await fetch(`${API_URL}/create-session`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ order_id: data.order_id })
+      });
+      const sdata = await paid.json();
+      sessionToken = sdata.token;
+      sessionArea.style.display = 'block';
+      checkSession();
     } else {
       alert('Failed to create payment session');
     }
@@ -91,9 +103,9 @@ async function checkSession() {
   try {
     const res = await fetch(`${API_URL}/session/${sessionToken}`);
     const data = await res.json();
-    if (data.active) {
-      questionsLeftSpan.textContent = data.questionsLeft;
-      timeLeftSpan.textContent = data.timeLeft;
+    if (data.questions_left >= 0) {
+      questionsLeftSpan.textContent = data.questions_left;
+      timeLeftSpan.textContent = new Date(data.expires_at).toLocaleString();
     } else {
       sessionToken = null;
       sessionArea.style.display = 'none';
@@ -104,12 +116,4 @@ async function checkSession() {
 }
 setInterval(checkSession, 10000);
 
-// ===================== HANDLE PAYMENT CALLBACK ====================
-const urlParams = new URLSearchParams(window.location.search);
-const tokenFromUrl = urlParams.get('session');
-if (tokenFromUrl) {
-  sessionToken = tokenFromUrl;
-  sessionArea.style.display = 'block';
-  checkSession();
-}
 
