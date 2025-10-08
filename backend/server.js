@@ -1,23 +1,25 @@
+// ==================== Olympic Backend ====================
+
 import express from 'express';
 import cors from 'cors';
-import fetch from 'node-fetch';
 import bodyParser from 'body-parser';
 import sqlite3 from 'sqlite3';
 import { open } from 'sqlite';
 import path from 'path';
 import { fileURLToPath } from 'url';
+import OpenAI from 'openai';
 
-// ========== CONFIG ==========
+// ==================== CONFIG ====================
 const PORT = process.env.PORT || 10000;
 const SESSION_DURATION_HOURS = 2;
 const SESSION_PRICE = 2.0;
-const QUESTIONS_PER_SESSION = 5; // after payment
+const QUESTIONS_PER_SESSION = 5;
 const DB_FILE = './olympic.db';
+const OPENAI_KEY = process.env.OPENAI_API_KEY;
 
+// ==================== INIT ====================
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
-
-// ✅ serve frontend from frontend folder instead of public
 const FRONTEND_PATH = path.join(__dirname, '../frontend');
 
 const app = express();
@@ -25,7 +27,11 @@ app.use(cors());
 app.use(bodyParser.json());
 app.use(express.static(FRONTEND_PATH));
 
-// ========== DATABASE ==========
+const openai = new OpenAI({
+  apiKey: OPENAI_KEY
+});
+
+// ==================== DATABASE ====================
 let db;
 (async () => {
   db = await open({
@@ -44,7 +50,7 @@ let db;
   `);
 })();
 
-// ========== HELPERS ==========
+// ==================== HELPERS ====================
 function makeToken() {
   return Math.random().toString(36).substring(2) + Date.now().toString(36);
 }
@@ -57,33 +63,25 @@ function inFuture(hours) {
   return nowUnix() + hours * 3600;
 }
 
-// ========== CREATE FREE SESSION ==========
-app.post('/api/start', async (req, res) => {
-  try {
-    const token = makeToken();
-    await db.run(
-      `INSERT INTO sessions (token, expires_at, questions_left, paid) VALUES (?, ?, ?, ?)`,
-      token,
-      inFuture(SESSION_DURATION_HOURS),
-      QUESTIONS_PER_SESSION,
-      0
-    );
-    res.json({ token });
-  } catch (err) {
-    console.error(err);
-    res.status(500).json({ error: 'Session creation failed' });
-  }
+// ==================== PRICE ENDPOINT ====================
+app.get('/api/price', (req, res) => {
+  res.json({ price_usd: SESSION_PRICE });
 });
 
-// ========== PAYMENT ENDPOINTS (stub) ==========
+// ==================== PAYMENT (stub) ====================
 app.post('/api/create-invoice', async (req, res) => {
   try {
     const orderId = makeToken();
     const checkoutUrl = `https://nowpayments.io/payment/${orderId}`;
+
     await db.run(
       `INSERT INTO sessions (token, expires_at, questions_left, paid) VALUES (?, ?, ?, ?)`,
-      orderId, inFuture(SESSION_DURATION_HOURS), QUESTIONS_PER_SESSION, 0
+      orderId,
+      inFuture(SESSION_DURATION_HOURS),
+      QUESTIONS_PER_SESSION,
+      0
     );
+
     res.json({ order_id: orderId, checkout_url: checkoutUrl });
   } catch (err) {
     console.error(err);
@@ -107,71 +105,81 @@ app.post('/api/create-session', async (req, res) => {
   });
 });
 
-// ========== ASK ENDPOINT ==========
+// ==================== ASK ENDPOINT ====================
 app.post('/api/ask', async (req, res) => {
   const { token, question, subject } = req.body;
-  if (!token || !question) return res.status(400).json({ error: 'Missing token or question' });
+  if (!question) return res.status(400).json({ error: 'Missing question' });
 
-  const session = await db.get(`SELECT * FROM sessions WHERE token = ?`, token);
-  if (!session) return res.status(401).json({ error: 'Invalid session' });
+  let session;
+  if (token) {
+    session = await db.get(`SELECT * FROM sessions WHERE token = ?`, token);
+    if (!session) return res.status(401).json({ error: 'Invalid session' });
 
-  if (session.expires_at < nowUnix()) {
-    await db.run(`DELETE FROM sessions WHERE token = ?`, token);
-    return res.status(401).json({ error: 'session expired' });
+    if (session.expires_at < nowUnix()) {
+      await db.run(`DELETE FROM sessions WHERE token = ?`, token);
+      return res.status(401).json({ error: 'session expired' });
+    }
   }
 
-  // ✅ First question free
+  // ✅ First free question without session
+  if (!session) {
+    const freeToken = makeToken();
+    await db.run(
+      `INSERT INTO sessions (token, expires_at, questions_left, paid, questions_asked) VALUES (?, ?, ?, ?, ?)`,
+      freeToken,
+      inFuture(SESSION_DURATION_HOURS),
+      0,
+      0,
+      0
+    );
+    session = await db.get(`SELECT * FROM sessions WHERE token = ?`, freeToken);
+  }
+
+  // ✅ First free answer
   if (session.paid === 0 && session.questions_asked === 0) {
-    const aiAnswer = await generateAIAnswer(question, subject);
+    const aiResponse = await getAIAnswer(question, subject);
     await db.run(
       `UPDATE sessions SET questions_asked = questions_asked + 1 WHERE token = ?`,
-      token
+      session.token
     );
-    return res.json({ answer: aiAnswer });
+    return res.json({ answer: aiResponse, token: session.token });
   }
 
+  // ❌ No remaining questions
   if (session.questions_left <= 0) {
     return res.status(402).json({ error: 'no questions left' });
   }
 
-  const aiAnswer = await generateAIAnswer(question, subject);
+  // ✅ Paid question
+  const aiResponse = await getAIAnswer(question, subject);
   await db.run(
     `UPDATE sessions SET questions_left = questions_left - 1, questions_asked = questions_asked + 1 WHERE token = ?`,
-    token
+    session.token
   );
-  res.json({ answer: aiAnswer });
+
+  res.json({ answer: aiResponse, token: session.token, questions_left: session.questions_left - 1 });
 });
 
-// ========== AI GENERATION (using OpenAI API) ==========
-async function generateAIAnswer(question, subject) {
+// ==================== AI FUNCTION ====================
+async function getAIAnswer(question, subject) {
   try {
-    const apiKey = process.env.OPENAI_API_KEY;
-    if (!apiKey) return `⚠️ No AI key configured. Echo: ${question}`;
-
-    const response = await fetch('https://api.openai.com/v1/chat/completions', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        Authorization: `Bearer ${apiKey}`
-      },
-      body: JSON.stringify({
-        model: 'gpt-4o-mini',
-        messages: [
-          { role: 'system', content: 'You are an expert tutor for Olympic education.' },
-          { role: 'user', content: subject ? `Subject: ${subject}\nQuestion: ${question}` : question }
-        ]
-      })
+    const response = await openai.chat.completions.create({
+      model: 'gpt-4o-mini',
+      messages: [
+        { role: 'system', content: `You are a helpful assistant specialized in ${subject || 'general knowledge'}.` },
+        { role: 'user', content: question }
+      ],
+      max_tokens: 300
     });
 
-    const data = await response.json();
-    return data?.choices?.[0]?.message?.content?.trim() || `⚠️ Error: ${JSON.stringify(data)}`;
+    return response.choices[0].message.content;
   } catch (err) {
-    console.error('AI error:', err);
-    return `⚠️ AI error: ${err.message}`;
+    console.error('OpenAI error:', err);
+    return `🤖 Sorry, I couldn't get an answer right now.`;
   }
 }
 
-// ========== SESSION STATUS ==========
+// ==================== SESSION STATUS ====================
 app.get('/api/session/:token', async (req, res) => {
   const { token } = req.params;
   const session = await db.get(`SELECT * FROM sessions WHERE token = ?`, token);
@@ -180,17 +188,16 @@ app.get('/api/session/:token', async (req, res) => {
   res.json({
     token: session.token,
     expires_at: new Date(session.expires_at * 1000).toISOString(),
-    questions_left: session.questions_left,
-    paid: session.paid
+    questions_left: session.questions_left
   });
 });
 
-// ========== SERVE FRONTEND ==========
+// ==================== FRONTEND SERVE ====================
 app.get('*', (req, res) => {
   res.sendFile(path.join(FRONTEND_PATH, 'index.html'));
 });
 
-// ========== START SERVER ==========
+// ==================== START SERVER ====================
 app.listen(PORT, () => {
   console.log(`✅ Olympic backend listening on port ${PORT}`);
 });
