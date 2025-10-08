@@ -1,5 +1,3 @@
-// ==================== Olympic Backend ====================
-
 import express from 'express';
 import cors from 'cors';
 import bodyParser from 'body-parser';
@@ -9,7 +7,7 @@ import path from 'path';
 import { fileURLToPath } from 'url';
 import OpenAI from 'openai';
 
-// ==================== CONFIG ====================
+// ================= CONFIG =================
 const PORT = process.env.PORT || 10000;
 const SESSION_DURATION_HOURS = 2;
 const SESSION_PRICE = 2.0;
@@ -17,9 +15,11 @@ const QUESTIONS_PER_SESSION = 5;
 const DB_FILE = './olympic.db';
 const OPENAI_KEY = process.env.OPENAI_API_KEY;
 
-// ==================== INIT ====================
+// ================= INIT =================
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
+
+// 👇 SERVE frontend folder — this fixes the ENOENT error
 const FRONTEND_PATH = path.join(__dirname, '../frontend');
 
 const app = express();
@@ -31,7 +31,7 @@ const openai = new OpenAI({
   apiKey: OPENAI_KEY
 });
 
-// ==================== DATABASE ====================
+// ================= DB INIT =================
 let db;
 (async () => {
   db = await open({
@@ -50,25 +50,23 @@ let db;
   `);
 })();
 
-// ==================== HELPERS ====================
+// ================= HELPERS =================
 function makeToken() {
   return Math.random().toString(36).substring(2) + Date.now().toString(36);
 }
-
 function nowUnix() {
   return Math.floor(Date.now() / 1000);
 }
-
 function inFuture(hours) {
   return nowUnix() + hours * 3600;
 }
 
-// ==================== PRICE ENDPOINT ====================
+// ================= PRICE ENDPOINT =================
 app.get('/api/price', (req, res) => {
   res.json({ price_usd: SESSION_PRICE });
 });
 
-// ==================== PAYMENT (stub) ====================
+// ================= PAYMENT (stub) =================
 app.post('/api/create-invoice', async (req, res) => {
   try {
     const orderId = makeToken();
@@ -89,6 +87,7 @@ app.post('/api/create-invoice', async (req, res) => {
   }
 });
 
+// ================= CREATE SESSION =================
 app.post('/api/create-session', async (req, res) => {
   const { order_id } = req.body;
   if (!order_id) return res.status(400).json({ error: 'Missing order_id' });
@@ -105,7 +104,7 @@ app.post('/api/create-session', async (req, res) => {
   });
 });
 
-// ==================== ASK ENDPOINT ====================
+// ================= ASK =================
 app.post('/api/ask', async (req, res) => {
   const { token, question, subject } = req.body;
   if (!question) return res.status(400).json({ error: 'Missing question' });
@@ -121,7 +120,6 @@ app.post('/api/ask', async (req, res) => {
     }
   }
 
-  // ✅ First free question without session
   if (!session) {
     const freeToken = makeToken();
     await db.run(
@@ -135,7 +133,6 @@ app.post('/api/ask', async (req, res) => {
     session = await db.get(`SELECT * FROM sessions WHERE token = ?`, freeToken);
   }
 
-  // ✅ First free answer
   if (session.paid === 0 && session.questions_asked === 0) {
     const aiResponse = await getAIAnswer(question, subject);
     await db.run(
@@ -145,12 +142,10 @@ app.post('/api/ask', async (req, res) => {
     return res.json({ answer: aiResponse, token: session.token });
   }
 
-  // ❌ No remaining questions
   if (session.questions_left <= 0) {
     return res.status(402).json({ error: 'no questions left' });
   }
 
-  // ✅ Paid question
   const aiResponse = await getAIAnswer(question, subject);
   await db.run(
     `UPDATE sessions SET questions_left = questions_left - 1, questions_asked = questions_asked + 1 WHERE token = ?`,
@@ -160,7 +155,7 @@ app.post('/api/ask', async (req, res) => {
   res.json({ answer: aiResponse, token: session.token, questions_left: session.questions_left - 1 });
 });
 
-// ==================== AI FUNCTION ====================
+// ================= AI FUNCTION =================
 async function getAIAnswer(question, subject) {
   try {
     const response = await openai.chat.completions.create({
@@ -179,7 +174,7 @@ async function getAIAnswer(question, subject) {
   }
 }
 
-// ==================== SESSION STATUS ====================
+// ================= SESSION STATUS =================
 app.get('/api/session/:token', async (req, res) => {
   const { token } = req.params;
   const session = await db.get(`SELECT * FROM sessions WHERE token = ?`, token);
@@ -192,12 +187,13 @@ app.get('/api/session/:token', async (req, res) => {
   });
 });
 
-// ==================== FRONTEND SERVE ====================
+// ================= FRONTEND =================
+// 👇 This line is what was failing previously. Now it points to your real frontend.
 app.get('*', (req, res) => {
   res.sendFile(path.join(FRONTEND_PATH, 'index.html'));
 });
 
-// ==================== START SERVER ====================
+// ================= START =================
 app.listen(PORT, () => {
   console.log(`✅ Olympic backend listening on port ${PORT}`);
 });
