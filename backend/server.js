@@ -21,7 +21,7 @@ const __dirname = path.dirname(__filename);
 const app = express();
 app.use(cors());
 app.use(bodyParser.json());
-app.use(express.static(path.join(__dirname, 'public')));
+app.use(express.static(path.join(__dirname, '../frontend')));
 
 // ========== DATABASE ==========
 let db;
@@ -168,7 +168,7 @@ app.get('/api/session/:token', async (req, res) => {
 
 // ========== SERVE FRONTEND ==========
 app.get('*', (req, res) => {
-  res.sendFile(path.join(__dirname, 'public', 'index.html'));
+ res.sendFile(path.join(__dirname, '../frontend', 'index.html'));
 });
 
 // ========== START SERVER ==========
